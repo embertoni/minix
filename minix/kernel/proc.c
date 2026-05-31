@@ -57,122 +57,17 @@ static int deadlock(int function, register struct proc *caller,
 static int try_async(struct proc *caller_ptr);
 static int try_one(endpoint_t receive_e, struct proc *src_ptr,
 	struct proc *dst_ptr);
-static struct proc * pick_proc(void)
-{
-/* Decide who to run now.  A new process is selected and returned.
- * When a billable process is selected, record it in 'bill_ptr', so that the 
- * clock task can tell who to bill for system time.
- *
- * This function always uses the run queues of the local cpu!
- */
-  register struct proc *rp;			/* process to run */
-  struct proc **rdy_head;
-  int q;				/* iterate over queues */
-
-#if ACTIVE_SCHED_ALG == SCHED_ALG_LOTTERY
-  struct proc *candidate;
-  int total_tickets, winning_ticket, tickets;
-#endif
-
-  /* Check each of the scheduling queues for ready processes. The number of
-   * queues is defined in proc.h, and priorities are set in the task table.
-   * If there are no processes ready to run, return NULL.
-   */
-  rdy_head = get_cpulocal_var(run_q_head);
-
-#if ACTIVE_SCHED_ALG == SCHED_ALG_LOTTERY
-  /* Preserve original MINIX behavior for system queues. This keeps PM, VFS,
-   * RS, SCHED, drivers, and other essential services stable.
-   */
-  for (q=0; q < USER_Q; q++) {
-	if(!(rp = rdy_head[q])) {
-		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
-		continue;
-	}
-	assert(proc_is_runnable(rp));
-	if (priv(rp)->s_flags & BILLABLE)
-		get_cpulocal_var(bill_ptr) = rp;
-	return rp;
-  }
-
-  /* Count tickets among all ready user processes. */
-  total_tickets = 0;
-  for (q=USER_Q; q <= MIN_USER_Q; q++) {
-	for (candidate = rdy_head[q]; candidate;
-	    candidate = candidate->p_nextready) {
-		assert(proc_is_runnable(candidate));
-		total_tickets += lottery_tickets(candidate);
-	}
-  }
-
-  /* Draw one winning ticket and return the owning process. */
-  if (total_tickets > 0) {
-	winning_ticket = lottery_random() % total_tickets;
-
-	for (q=USER_Q; q <= MIN_USER_Q; q++) {
-		for (candidate = rdy_head[q]; candidate;
-		    candidate = candidate->p_nextready) {
-			tickets = lottery_tickets(candidate);
-
-			if (winning_ticket < tickets) {
-				assert(proc_is_runnable(candidate));
-				if (priv(candidate)->s_flags & BILLABLE)
-					get_cpulocal_var(bill_ptr) = candidate;
-				return candidate;
-			}
-
-			winning_ticket -= tickets;
-		}
-	}
-  }
-
-  /* If there are no user processes ready, continue with lower queues such as
-   * IDLE using the original MINIX behavior.
-   */
-  for (q=MIN_USER_Q + 1; q < NR_SCHED_QUEUES; q++) {
-	if(!(rp = rdy_head[q])) {
-		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
-		continue;
-	}
-	assert(proc_is_runnable(rp));
-	if (priv(rp)->s_flags & BILLABLE)
-		get_cpulocal_var(bill_ptr) = rp;
-	return rp;
-  }
-
-  return NULL;
-#else
-  for (q=0; q < NR_SCHED_QUEUES; q++) {	
-	if(!(rp = rdy_head[q])) {
-		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
-		continue;
-	}
-	assert(proc_is_runnable(rp));
-	if (priv(rp)->s_flags & BILLABLE)	 	
-		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
-	return rp;
-  }
-  return NULL;
-#endif
-}
+static struct proc * pick_proc(void);
 
 
 #define PICK_ANY	1
 #define PICK_HIGHERONLY	2
 
-/* Project scheduler selector. Keep this synchronized with
- * minix/servers/sched/schedule.c.
- *
- * For SCHED_ALG_DEFAULT, SCHED_ALG_RR, and SCHED_ALG_FCFS, this file keeps the
- * original MINIX pick_proc() behavior. For SCHED_ALG_LOTTERY, system queues are
- * still handled normally, but ready user processes are selected by lottery.
- */
 #define SCHED_ALG_DEFAULT 0
 #define SCHED_ALG_RR      1
 #define SCHED_ALG_FCFS    2
 #define SCHED_ALG_LOTTERY 3
 
-/* Change only this line to select the kernel-side scheduling behavior. */
 #ifndef ACTIVE_SCHED_ALG
 #define ACTIVE_SCHED_ALG SCHED_ALG_DEFAULT
 #endif
@@ -188,7 +83,7 @@ static unsigned lottery_random(void)
 
 static int lottery_tickets(struct proc *rp)
 {
-	/* Equal-ticket lottery: one ready user process = one ticket. */
+	/* Equal-ticket lottery: each ready user process gets one ticket. */
 	(void) rp;
 	return 1;
 }
@@ -1892,22 +1787,123 @@ static struct proc * pick_proc(void)
   struct proc **rdy_head;
   int q;				/* iterate over queues */
 
+#if ACTIVE_SCHED_ALG == SCHED_ALG_LOTTERY
+  struct proc *candidate;
+  int total_tickets;
+  int winning_ticket;
+  int tickets;
+#endif
+
   /* Check each of the scheduling queues for ready processes. The number of
    * queues is defined in proc.h, and priorities are set in the task table.
    * If there are no processes ready to run, return NULL.
    */
   rdy_head = get_cpulocal_var(run_q_head);
+
+#if ACTIVE_SCHED_ALG == SCHED_ALG_LOTTERY
+  /*
+   * Preserve original MINIX behavior for system queues. This keeps PM, VFS,
+   * RS, SCHED, drivers, and other essential services stable.
+   *
+   * User processes normally use queues USER_Q through MIN_USER_Q. The
+   * assignment also describes user processes as being placed between
+   * USER_Q(7) and MIN_USER_Q(14).
+   */
+  for (q=0; q < USER_Q; q++) {
+	if(!(rp = rdy_head[q])) {
+		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
+		continue;
+	}
+
+	assert(proc_is_runnable(rp));
+
+	if (priv(rp)->s_flags & BILLABLE)
+		get_cpulocal_var(bill_ptr) = rp;
+
+	return rp;
+  }
+
+  /*
+   * Count tickets among all ready user processes.
+   * This implementation is equal-ticket lottery:
+   * each ready user process gets one ticket.
+   */
+  total_tickets = 0;
+
+  for (q=USER_Q; q <= MIN_USER_Q; q++) {
+	for (candidate = rdy_head[q]; candidate;
+	    candidate = candidate->p_nextready) {
+
+		assert(proc_is_runnable(candidate));
+		total_tickets += lottery_tickets(candidate);
+	}
+  }
+
+  /*
+   * Draw one winning ticket and select the process that owns it.
+   */
+  if (total_tickets > 0) {
+	winning_ticket = lottery_random() % total_tickets;
+
+	for (q=USER_Q; q <= MIN_USER_Q; q++) {
+		for (candidate = rdy_head[q]; candidate;
+		    candidate = candidate->p_nextready) {
+
+			tickets = lottery_tickets(candidate);
+
+			if (winning_ticket < tickets) {
+				assert(proc_is_runnable(candidate));
+
+				if (priv(candidate)->s_flags & BILLABLE)
+					get_cpulocal_var(bill_ptr) = candidate;
+
+				return candidate;
+			}
+
+			winning_ticket -= tickets;
+		}
+	}
+  }
+
+  /*
+   * If no user process is ready, continue with lower queues, such as IDLE_Q,
+   * using original MINIX behavior.
+   */
+  for (q=MIN_USER_Q + 1; q < NR_SCHED_QUEUES; q++) {
+	if(!(rp = rdy_head[q])) {
+		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
+		continue;
+	}
+
+	assert(proc_is_runnable(rp));
+
+	if (priv(rp)->s_flags & BILLABLE)
+		get_cpulocal_var(bill_ptr) = rp;
+
+	return rp;
+  }
+
+  return NULL;
+#else
+  /*
+   * Original MINIX behavior for DEFAULT, RR, and FCFS.
+   */
   for (q=0; q < NR_SCHED_QUEUES; q++) {	
 	if(!(rp = rdy_head[q])) {
 		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
 		continue;
 	}
+
 	assert(proc_is_runnable(rp));
+
 	if (priv(rp)->s_flags & BILLABLE)	 	
 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
+
 	return rp;
   }
+
   return NULL;
+#endif
 }
 
 /*===========================================================================*
