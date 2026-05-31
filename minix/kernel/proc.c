@@ -58,6 +58,7 @@ static int try_async(struct proc *caller_ptr);
 static int try_one(endpoint_t receive_e, struct proc *src_ptr,
 	struct proc *dst_ptr);
 static struct proc * pick_proc(void);
+static void enqueue_head(struct proc *rp);
 
 
 #define PICK_ANY	1
@@ -83,11 +84,40 @@ static unsigned lottery_random(void)
 
 static int lottery_tickets(struct proc *rp)
 {
-	/* Equal-ticket lottery: each ready user process gets one ticket. */
 	(void) rp;
 	return 1;
 }
 #endif
+
+static struct priv idle_priv;
+
+static void set_idle_name(char * name, int n)
+{
+        int i, c;
+        int p_z = 0;
+
+        if (n > 999)
+                n = 999;
+
+        name[0] = 'i';
+        name[1] = 'd';
+        name[2] = 'l';
+        name[3] = 'e';
+
+        for (i = 4, c = 100; c > 0; c /= 10) {
+                int digit;
+
+                digit = n / c;
+                n -= digit * c;
+
+                if (p_z || digit != 0 || c == 1) {
+                        p_z = 1;
+                        name[i++] = '0' + digit;
+                }
+        }
+
+        name[i] = '\0';
+}
 
 #define BuildNotifyMessage(m_ptr, src, dst_ptr) \
 	memset((m_ptr), 0, sizeof(*(m_ptr)));				\
