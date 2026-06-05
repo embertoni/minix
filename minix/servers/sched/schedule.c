@@ -1,16 +1,5 @@
 /* This file contains the scheduling policy for SCHED
  *
- * Project version: MINIX default + RR + FCFS-like + Lottery support.
- *
- * IMPORTANT:
- *   Select the same ACTIVE_SCHED_ALG value in this file and in
- *   minix/kernel/proc.c.
- *
- * Algorithms:
- *   SCHED_ALG_DEFAULT : original MINIX userspace scheduler policy
- *   SCHED_ALG_RR      : fixed Round-Robin for user processes
- *   SCHED_ALG_FCFS    : FCFS-like policy using a large quantum
- *   SCHED_ALG_LOTTERY : user processes stay in USER_Q; proc.c performs lottery
  *
  * The entry points are:
  *   do_noquantum:        Called on behalf of process' that run out of quantum
@@ -52,23 +41,19 @@ static int schedule_process(struct schedproc * rmp, unsigned flags);
 
 #define DEFAULT_USER_TIME_SLICE 200
 
-/* Project scheduler selector. Keep this synchronized with proc.c. */
 #define SCHED_ALG_DEFAULT 0
 #define SCHED_ALG_RR      1
 #define SCHED_ALG_FCFS    2
 #define SCHED_ALG_LOTTERY 3
 
-/* Change only this line to select the userspace scheduler policy. */
 #ifndef ACTIVE_SCHED_ALG
 #define ACTIVE_SCHED_ALG SCHED_ALG_DEFAULT
 #endif
 
-/* Safe, simple quantum values in milliseconds. */
 #define RR_USER_TIME_SLICE      200
 #define FCFS_USER_TIME_SLICE    3000
 #define LOTTERY_USER_TIME_SLICE 200
 
-/* processes created by RS are system processes */
 #define is_system_proc(p)   ((p)->parent == RS_PROC_NR)
 
 #define is_user_proc(p)     (!is_system_proc(p))
@@ -93,7 +78,6 @@ static const char *sched_alg_name(void)
 static void apply_user_policy(struct schedproc *rmp)
 {
 #if ACTIVE_SCHED_ALG == SCHED_ALG_DEFAULT
-    /* Keep the original MINIX behavior. */
     (void) rmp;
 #elif ACTIVE_SCHED_ALG == SCHED_ALG_RR
     rmp->max_priority = USER_Q;
@@ -104,7 +88,6 @@ static void apply_user_policy(struct schedproc *rmp)
     rmp->priority = USER_Q;
     rmp->time_slice = FCFS_USER_TIME_SLICE;
 #elif ACTIVE_SCHED_ALG == SCHED_ALG_LOTTERY
-    /* Keep all user processes in one user queue. proc.c chooses by lottery. */
     rmp->max_priority = USER_Q;
     rmp->priority = USER_Q;
     rmp->time_slice = LOTTERY_USER_TIME_SLICE;
@@ -158,8 +141,6 @@ int do_noquantum(message *m_ptr)
     int rv, proc_nr_n;
 
     if (sched_isokendpt(m_ptr->m_source, &proc_nr_n) != OK) {
-        printf("SCHED: WARNING: got an invalid endpoint in OOQ msg %u.\n",
-        m_ptr->m_source);
         return EBADEPT;
     }
 
@@ -167,13 +148,12 @@ int do_noquantum(message *m_ptr)
 
 #if ACTIVE_SCHED_ALG == SCHED_ALG_DEFAULT
     if (rmp->priority < MIN_USER_Q) {
-        rmp->priority += 1; /* lower priority */
+        rmp->priority += 1;
     }
 #else
     if (is_user_proc(rmp)) {
         apply_user_policy(rmp);
     } else {
-        /* Keep original behavior for system processes. */
         if (rmp->priority < MIN_USER_Q) {
             rmp->priority += 1;
         }
@@ -200,8 +180,6 @@ int do_stop_scheduling(message *m_ptr)
 
     if (sched_isokendpt(m_ptr->m_lsys_sched_scheduling_stop.endpoint,
             &proc_nr_n) != OK) {
-        printf("SCHED: WARNING: got an invalid endpoint in OOQ msg "
-        "%d\n", m_ptr->m_lsys_sched_scheduling_stop.endpoint);
         return EBADEPT;
     }
 
@@ -300,8 +278,6 @@ int do_start_scheduling(message *m_ptr)
     /* Take over scheduling the process. The kernel reply message populates
      * the processes current priority and its time slice */
     if ((rv = sys_schedctl(0, rmp->endpoint, 0, 0, 0)) != OK) {
-        printf("Sched: Error taking over scheduling for %d, kernel said %d\n",
-            rmp->endpoint, rv);
         return rv;
     }
     rmp->flags = IN_USE;
@@ -315,8 +291,6 @@ int do_start_scheduling(message *m_ptr)
     }
 
     if (rv != OK) {
-        printf("Sched: Error while scheduling process, kernel replied %d\n",
-            rv);
         return rv;
     }
 
@@ -347,7 +321,6 @@ int do_nice(message *m_ptr)
         return EPERM;
 
     if (sched_isokendpt(m_ptr->m_pm_sched_scheduling_set_nice.endpoint, &proc_nr_n) != OK) {
-        printf("SCHED: WARNING: got an invalid endpoint in OoQ msg "
         "%d\n", m_ptr->m_pm_sched_scheduling_set_nice.endpoint);
         return EBADEPT;
     }
@@ -359,18 +332,15 @@ int do_nice(message *m_ptr)
     }
 
 #if ACTIVE_SCHED_ALG == SCHED_ALG_DEFAULT
-    /* Store old values, in case we need to roll back the changes */
     old_q     = rmp->priority;
     old_max_q = rmp->max_priority;
 
-    /* Update the proc entry and reschedule the process */
     rmp->max_priority = rmp->priority = new_q;
 #else
     old_q     = rmp->priority;
     old_max_q = rmp->max_priority;
 
     if (is_user_proc(rmp)) {
-        /* Keep the experiment algorithms deterministic and comparable. */
         apply_user_policy(rmp);
     } else {
         rmp->max_priority = rmp->priority = new_q;
@@ -378,8 +348,6 @@ int do_nice(message *m_ptr)
 #endif
 
     if ((rv = schedule_process_local(rmp)) != OK) {
-        /* Something went wrong when rescheduling the process, roll
-         * back the changes to proc struct */
         rmp->priority     = old_q;
         rmp->max_priority = old_max_q;
     }
@@ -431,7 +399,7 @@ void init_scheduling(void)
 {
     int r;
 
-    printf("SCHED: active scheduler algorithm: %s\n", sched_alg_name());
+    printf("Escalonador ativo: %s\n", sched_alg_name());
 
     balance_timeout = BALANCE_TIMEOUT * sys_hz();
 
@@ -457,7 +425,7 @@ void balance_queues(void)
         if (rmp->flags & IN_USE) {
 #if ACTIVE_SCHED_ALG == SCHED_ALG_DEFAULT
             if (rmp->priority > rmp->max_priority) {
-                rmp->priority -= 1; /* increase priority */
+                rmp->priority -= 1;
                 schedule_process_local(rmp);
             }
 #else
